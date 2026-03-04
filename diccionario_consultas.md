@@ -70,3 +70,24 @@ MATCH (a:Almacen {id: 1})-[r:CONECTA_A]->(dest)
 WHERE r.capacidad_max < 25
 RETURN dest.nombre AS Punto_No_Apto, r.capacidad_max AS Capacidad_Calle, "BLOQUEADO" AS Estado;
 ```
+
+## 6. 🗺️ Visualización de Ruta Óptima
+Consulta para visualizar la ruta óptima desde un almacén a un punto de entrega.
+```cypher
+MATCH (source:Almacen {id: 1}), (target:PuntoEntrega {nombre: "Tienda Norte"})
+CALL gds.shortestPath.dijkstra.stream('logisticsGraph', {
+    sourceNode: source,
+    targetNode: target,
+    relationshipWeightProperty: 'tiempo_min'
+})
+YIELD nodeIds
+// El truco: Convertimos los IDs de GDS en nodos reales de la BD
+UNWIND nodeIds AS nodeId
+MATCH (n) WHERE id(n) = nodeId
+WITH collect(n) AS nodos
+// Buscamos las relaciones entre esos nodos para que Neo4j las dibuje
+UNWIND nodos AS n1
+UNWIND nodos AS n2
+MATCH (n1)-[r:CONECTA_A]->(n2)
+RETURN n1, r, n2; 
+```
