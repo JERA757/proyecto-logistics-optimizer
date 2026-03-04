@@ -1,35 +1,71 @@
-":begin
-CREATE RANGE INDEX FOR (n:Almacen) ON (n.id);
-CREATE RANGE INDEX FOR (n:PuntoEntrega) ON (n.id);
-CREATE CONSTRAINT UNIQUE_IMPORT_NAME FOR (node:`UNIQUE IMPORT LABEL`) REQUIRE (node.`UNIQUE IMPORT ID`) IS UNIQUE;
-:commit
-CALL db.awaitIndexes(300);
-:begin
-UNWIND [{_id:0, properties:{id:1, nombre:"Centro de Distribución A"}}] AS row
-CREATE (n:`UNIQUE IMPORT LABEL`{`UNIQUE IMPORT ID`: row._id}) SET n += row.properties SET n:Almacen;
-UNWIND [{_id:1, properties:{id:2, nombre:"Tienda Norte"}}, {_id:3, properties:{id:4, nombre:"Tienda Sur"}}] AS row
-CREATE (n:`UNIQUE IMPORT LABEL`{`UNIQUE IMPORT ID`: row._id}) SET n += row.properties SET n:PuntoEntrega;
-UNWIND [{_id:2, properties:{id:3}}] AS row
-CREATE (n:`UNIQUE IMPORT LABEL`{`UNIQUE IMPORT ID`: row._id}) SET n += row.properties SET n:Interseccion;
-:commit
-:begin
-UNWIND [{start: {_id:2}, end: {_id:1}, properties:{tiempo_min:8, capacidad_max:10, distancia:5.0, estado_trafico:2.5}}] AS row
-MATCH (start:`UNIQUE IMPORT LABEL`{`UNIQUE IMPORT ID`: row.start._id})
-MATCH (end:`UNIQUE IMPORT LABEL`{`UNIQUE IMPORT ID`: row.end._id})
-CREATE (start)-[r:CONECTA_A]->(end) SET r += row.properties;
-UNWIND [{start: {_id:0}, end: {_id:2}, properties:{tiempo_min:15, capacidad_max:20, distancia:10.5, estado_trafico:1.2}}] AS row
-MATCH (start:`UNIQUE IMPORT LABEL`{`UNIQUE IMPORT ID`: row.start._id})
-MATCH (end:`UNIQUE IMPORT LABEL`{`UNIQUE IMPORT ID`: row.end._id})
-CREATE (start)-[r:CONECTA_A]->(end) SET r += row.properties;
-UNWIND [{start: {_id:0}, end: {_id:3}, properties:{tiempo_min:25, capacidad_max:30, distancia:20.0, estado_trafico:1.0}}] AS row
-MATCH (start:`UNIQUE IMPORT LABEL`{`UNIQUE IMPORT ID`: row.start._id})
-MATCH (end:`UNIQUE IMPORT LABEL`{`UNIQUE IMPORT ID`: row.end._id})
-CREATE (start)-[r:CONECTA_A]->(end) SET r += row.properties;
-:commit
-:begin
-MATCH (n:`UNIQUE IMPORT LABEL`)  WITH n LIMIT 20000 REMOVE n:`UNIQUE IMPORT LABEL` REMOVE n.`UNIQUE IMPORT ID`;
-:commit
-:begin
-DROP CONSTRAINT UNIQUE_IMPORT_NAME;
-:commit
-"
+// 1. Asignar coordenadas base a todos los nodos del sistema
+MATCH (n:Almacen) SET n.lat = 7.3, n.lon = -62.6;
+MATCH (n:PuntoEntrega) SET n.lat = 7.4, n.lon = -62.5;
+MATCH (n:Interseccion) SET n.lat = 7.35, n.lon = -62.55;
+// Borrar la proyección anterior si existe para limpiar la RAM
+CALL gds.graph.drop('logisticsGraph', false);
+
+// Proyectar el grafo usando la sintaxis de mapa (Full Configuration)
+CALL gds.graph.project(
+  'logisticsGraph',
+  {
+    Almacen: { label: 'Almacen', properties: ['lat', 'lon'] },
+    PuntoEntrega: { label: 'PuntoEntrega', properties: ['lat', 'lon'] },
+    Interseccion: { label: 'Interseccion', properties: ['lat', 'lon'] }
+  },
+  {
+    CONECTA_A: {
+      type: 'CONECTA_A',
+      properties: {
+        distancia: { property: 'distancia' },
+        tiempo_min: { property: 'tiempo_min' }
+      }
+    }
+  }
+);
+MATCH (source:Almacen {id: 1}), (target:PuntoEntrega {nombre: "Tienda Norte"})
+// Cálculo 1: Distancia
+CALL gds.shortestPath.dijkstra.stream('logisticsGraph', {
+    sourceNode: source, targetNode: target, relationshipWeightProperty: 'distancia'
+}) YIELD totalCost AS km
+// Cálculo 2: Tiempo
+WITH source, target, km
+CALL gds.shortestPath.dijkstra.stream('logisticsGraph', {
+    sourceNode: source, targetNode: target, relationshipWeightProperty: 'tiempo_min'
+}) YIELD totalCost AS minutos
+RETURN 
+    "Almacén 1 -> Tienda Norte" AS Tramo,
+    km AS `Distancia (KM)`, 
+    minutos AS `Tiempo (Minutos)`,
+    "Dijkstra" AS Algoritmo;
+// Desafío 1: Comparación Directa Dijkstra vs A*
+MATCH (source:Almacen {id: 1}), (target:PuntoEntrega {nombre: "Tienda Norte"})
+CALL gds.shortestPath.dijkstra.stream('logisticsGraph', {
+    sourceNode: source,
+    targetNode: target,
+    relationshipWeightProperty: 'tiempo_min'
+}) YIELD totalCost AS costoDijkstra
+
+WITH source, target, costoDijkstra
+CALL gds.shortestPath.astar.stream('logisticsGraph', {
+    sourceNode: source,
+    targetNode: target,
+    latitudeProperty: 'lat',
+    longitudeProperty: 'lon',
+    relationshipWeightProperty: 'tiempo_min'
+}) YIELD totalCost AS costoAStar
+
+RETURN 
+    "Ruta a Tienda Norte" AS Trayecto,
+    costoDijkstra AS `Dijkstra (Tiempo)`, 
+    costoAStar AS `A* (Heurística)`,
+    CASE WHEN costoDijkstra = costoAStar THEN "Coincidencia Óptima" ELSE "Diferencia" END AS Estado;
+MATCH path = (a:Almacen {id: 1})-[:CONECTA_A*]->(dest:PuntoEntrega)
+WITH dest, relationships(path) AS rels
+UNWIND rels AS r
+WITH dest.nombre AS Destino, sum(r.distancia * r.estado_trafico) AS Costo_Calculado
+RETURN Destino, Costo_Calculado
+ORDER BY Costo_Calculado ASC;
+MATCH (a:Almacen {id: 1})-[r:CONECTA_A]->(dest)
+WHERE r.capacidad_max < 25
+RETURN dest.nombre AS Punto_No_Apto, r.capacidad_max AS Capacidad_Calle, "BLOQUEADO" AS Estado;

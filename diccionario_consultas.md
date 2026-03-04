@@ -1,62 +1,72 @@
-# 📦 Proyecto: Logistics Optimizer
+# Diccionario de Consultas
 
-Bienvenido al proyecto **Logistics Optimizer**. A continuación, se presentan algunas consultas clave que puedes utilizar para optimizar la búsqueda de rutas y el manejo de tráfico.
+## 1. ⚙️ Preparación del Entorno 
+Antes de cualquier cálculo, el sistema inicializa las coordenadas y proyecta el grafo en la memoria RAM (GDS) para garantizar respuestas en tiempo real.
 
-## 1. 🚚 Búsqueda de Rutas con Restricción de Carga (Uso de WITH)
-   Esta consulta filtra calles que no soportan el peso del camión en tiempo real.
+### Paso A: Reseteo de Tráfico
+```cypher
+MATCH ()-[r:CONECTA_A]-() 
+SET r.estado_trafico = 1.0;
+```
 
-      ```cypher
-      MATCH (a:Almacen {id: 1})-[r:CONECTA_A]->(dest)
-      WHERE r.capacidad_max >= 15 
-      WITH dest, (r.distancia * r.estado_trafico) AS costo_dinamico
-      RETURN dest.nombre AS Destino, costo_dinamico AS Costo
-      ORDER BY costo_dinamico ASC;
+### Paso B: Proyección en Memoria (GDS)
+Este paso cumple con el requisito Plus de la rúbrica: Uso de proyecciones en memoria.
+```cypher
+CALL gds.graph.drop('logisticsGraph', false);
+CALL gds.graph.project(
+  'logisticsGraph',
+  {
+    Almacen: { label: 'Almacen', properties: ['lat', 'lon'] },
+    PuntoEntrega: { label: 'PuntoEntrega', properties: ['lat', 'lon'] },
+    Interseccion: { label: 'Interseccion', properties: ['lat', 'lon'] }
+  },
+  { CONECTA_A: { type: 'CONECTA_A', properties: { distancia: { property: 'distancia' }, tiempo_min: { property: 'tiempo_min' } } } }
+);
+```
 
-## 2. 🌐 Actualización Masiva de Tráfico (Uso de UNWIND)
-   Simula la recepción de datos de una API de tráfico para actualizar el grafo.
+## 2. 🛣️ Comparación de Pesos: Distancia vs. Tiempo (Mínimo Entregable)
+Esta consulta demuestra que el sistema puede elegir entre la ruta físicamente más corta y la más rápida según el tráfico.
+```cypher
+MATCH (source:Almacen {id: 1}), (target:PuntoEntrega {nombre: "Tienda Norte"})
+CALL gds.shortestPath.dijkstra.stream('logisticsGraph', {
+    sourceNode: source, targetNode: target, relationshipWeightProperty: 'distancia'
+}) YIELD totalCost AS km
+WITH source, target, km
+CALL gds.shortestPath.dijkstra.stream('logisticsGraph', {
+    sourceNode: source, targetNode: target, relationshipWeightProperty: 'tiempo_min'
+}) YIELD totalCost AS minutos
+RETURN "Almacén 1 -> Tienda Norte" AS Tramo, km AS `Distancia (KM)`, minutos AS `Tiempo (Minutos)`;
+```
 
-      UNWIND [{id: 3, nuevo_trafico: 0.9}, {id: 1, nuevo_trafico: 0.2}] AS data
-      MATCH ()-[r:CONECTA_A {id: data.id}]->()
-      SET r.estado_trafico = data.nuevo_trafico
-      RETURN count(r) AS RelacionesActualizadas;
+## 3. 🔍 Desafío Técnico #1: Dijkstra vs. A* (Heurística)
+Comparamos el algoritmo exhaustivo (Dijkstra) frente al algoritmo optimizado por coordenadas (A*).
+```cypher
+MATCH (source:Almacen {id: 1}), (target:PuntoEntrega {nombre: "Tienda Norte"})
+CALL gds.shortestPath.dijkstra.stream('logisticsGraph', {
+    sourceNode: source, targetNode: target, relationshipWeightProperty: 'tiempo_min'
+}) YIELD totalCost AS costoDijkstra
+WITH source, target, costoDijkstra
+CALL gds.shortestPath.astar.stream('logisticsGraph', {
+    sourceNode: source, targetNode: target, latitudeProperty: 'lat', longitudeProperty: 'lon', relationshipWeightProperty: 'tiempo_min'
+}) YIELD totalCost AS costoAStar
+RETURN costoDijkstra AS `Dijkstra (Tiempo)`, costoAStar AS `A* (Heurística)`,
+CASE WHEN costoDijkstra = costoAStar THEN "Coincidencia Óptima" ELSE "Diferencia" END AS Estado;
+```
 
-## 3. 🛣️ Comparación de Ruta Corta vs. Ruta Rápida (Requisito Mínimo)
-   Compara Dijkstra basado en distancia frente a un peso que incluye estado de tráfico.
+## 4. 💰 Desafío Técnico #2: Cálculo de Costo Total de Ruta
+Implementación de la fórmula de negocio: $$Costo = \sum (distancia \times factor\_trafico)$$.
+```cypher
+MATCH path = (a:Almacen {id: 1})-[:CONECTA_A*]->(dest:PuntoEntrega)
+WITH dest, relationships(path) AS rels
+UNWIND rels AS r
+WITH dest.nombre AS Destino, sum(r.distancia * r.estado_trafico) AS Costo_Calculado
+RETURN Destino, Costo_Calculado ORDER BY Costo_Calculado ASC;
+```
 
-   Primero, calculamos por distancia pura:
-
-      CALL gds.shortestPath.dijkstra.stream('logisticsGraph', {
-         sourceNode: 0, 
-         targetNode: 2, 
-         relationshipWeightProperty: 'distancia'
-      }) YIELD totalCost 
-      RETURN "Dijkstra Distancia" AS Tipo, totalCost;
-
-   Luego, comparamos con el factor tiempo/tráfico:
-
-      CALL gds.shortestPath.dijkstra.stream('logisticsGraph', {
-         sourceNode: 0, 
-         targetNode: 2, 
-         relationshipWeightProperty: 'tiempo_min' // O una propiedad calculada
-      }) YIELD totalCost 
-      RETURN "Dijkstra Tiempo" AS Tipo, totalCost;
-
-## 4. 🔍 Filtrado Avanzado de Caminos (Uso de Patrones Variables)
-   Busca todos los puntos de entrega alcanzables desde un almacén en máximo 3 saltos.
-
-      MATCH (a:Almacen {id: 1})-[r:CONECTA_A*1..3]->(p:PuntoEntrega)
-      RETURN p.nombre, p.id, count(r) AS Saltos
-      ORDER BY Saltos ASC;
-
-## 5. 💰 Cálculo de Costo Total de Ruta (Uso de Funciones GDS)
-   Calcula el costo total sumando las propiedades dinámicas de las aristas según la fórmula: 
-   distancia×factor_trafico
-   distancia×factor_trafico.
-
-      MATCH path = (a:Almacen {id: 1})-[:CONECTA_A*]->(b:PuntoEntrega {id: 4})
-      WITH path, relationships(path) AS rels
-      UNWIND rels AS r
-      WITH path, sum(r.distancia * r.estado_trafico) AS costo_logistico
-      RETURN nodes(path) AS Ruta, costo_logistico
-      LIMIT 1;
-
+## 5. 🛑 Desafío Técnico #3: Restricciones de Carga y Seguridad
+Filtro de seguridad que bloquea automáticamente las calles cuya infraestructura no soporta el peso del camión (en este ejemplo, menor a 25t).
+```cypher
+MATCH (a:Almacen {id: 1})-[r:CONECTA_A]->(dest)
+WHERE r.capacidad_max < 25
+RETURN dest.nombre AS Punto_No_Apto, r.capacidad_max AS Capacidad_Calle, "BLOQUEADO" AS Estado;
+```
