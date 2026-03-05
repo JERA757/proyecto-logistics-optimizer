@@ -17,3 +17,7 @@ Calcular rutas en SQL requiere múltiples *Joins* recursivos que consumen demasi
 - **Escalabilidad:** Las consultas no se ralentizan al aumentar las intersecciones.
 - **Flexibilidad:** Cambiar el factor de tráfico es instantáneo.
 - **Algoritmos Nativos:** GDS ya trae Dijkstra optimizado, algo que en SQL habría que programar manualmente.
+
+## Para Ejecutar el Dashboard
+streamlit run app.py
+- Se necesita instalar en el python la dependencia streamlit, neo4j, pandas
