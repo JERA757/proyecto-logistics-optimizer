@@ -128,3 +128,4 @@ else:
 # Pie de página
 st.markdown("---")
 st.caption("Sistema desarrollado con Neo4j Graph Data Science (GDS) y Streamlit Engine.")
+
